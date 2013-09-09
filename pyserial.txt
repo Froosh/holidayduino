@@ -1,0 +1,26 @@
+# wget https://pypi.python.org/packages/source/p/pyserial/pyserial-2.6.tar.gz
+# tar zxvf pyserial-2.6.tar.gz
+# cd pyserial-2.6
+# python2 setup.py install
+
+# python2
+Python 2.7.3 (default, Apr 29 2012, 15:21:38)
+[GCC 4.6.3] on linux2
+Type "help", "copyright", "credits" or "license" for more information.
+>>> import serial
+>>> hd = serial.Serial()
+>>> hd.baudrate = 57600
+>>> hd.port = "/dev/ttySP1"
+>>> hd.timeout=2  //seconds - float
+>>> hd
+Serial<id=0x404476d0, open=True>(port='/dev/ttySP1', baudrate=57600, bytesize=8,
+parity='N', stopbits=1, timeout=2, xonxoff=False, rtscts=False, dsrdtr=False)
+>>> hd.open()
+>>> hd.isOpen()
+True
+>>> hd.flushInput()
+>>> hd.write("?")
+1
+>>> hd.readline()
+'HolidayDuino01\r\n'
+>>> hd.close()

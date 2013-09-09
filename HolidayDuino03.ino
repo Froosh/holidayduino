@@ -1,0 +1,356 @@
+// HolidayDuino firmware
+
+#define VERSION "HolidayDuino03"
+
+// new version for 20MHz using FastSPI_LED2 (currently RC3)
+// also with OptiBoot to get more usable flash, so now 115200 baud
+
+#include <Wire.h>
+
+// FastSPI_LED2 is seriously amazing!
+// It handles 20MHz CPU and byte colour reordering
+#include <FastSPI_LED2.h>
+
+#define STRT 2  // INT 0
+#define DBGI 3  // INT 1
+#define DOUT 4
+#define BUT1 5
+#define BUT2 6
+#define BUT3 7
+#define ACKB 8
+
+#define MAX_LEDS 250
+
+CRGB leds[MAX_LEDS];
+byte *ledsraw;
+
+boolean active = false;
+boolean echo = false;
+boolean testmode = false;
+boolean eeok = false;
+char startbut = 0;
+int num_leds = 50;
+int cur_prog = 0;
+int num_progs = 0;
+int eepagesize = 32;
+int reg[16];
+int wdog = 0;
+int argc = 0, argv[2] = {0, 0};
+int led = 1, col = 0;
+long next = 0;
+long lastDBGI = -1000;
+volatile byte pos;
+volatile boolean got_frame;
+
+void setup()
+{
+  Serial.begin (115200);
+
+  // set up buttons with pullups
+  pinMode(BUT1, INPUT_PULLUP);
+  pinMode(BUT2, INPUT_PULLUP);
+  pinMode(BUT3, INPUT_PULLUP);
+
+  // set up acknowledge/busy pin
+  pinMode(ACKB, OUTPUT);
+  digitalWrite(ACKB, 1);
+
+  // set up SPI slave
+  pinMode(MISO, OUTPUT);
+  SPCR |= _BV(SPE);
+
+  // set up FastSPI output - WS2812 is GGRRBB
+  if (num_leds>0) FastLED.addLeds<WS2812, DOUT, GRB>(leds, num_leds);
+
+  ledsraw = (byte *)leds;
+  pos = 0;  // skip status LED
+  got_frame = false;
+
+  // detect falling STRT to indicate start/end of frame
+  attachInterrupt(0, spiStartISR, CHANGE);
+
+  // detect falling DBGI to indicate iMX boot messages
+  attachInterrupt(1, dbgISR, FALLING);
+
+  // enable SPI slave interrupts
+  SPCR |= _BV(SPIE);
+
+  // capture button state at boot
+  if (digitalRead(BUT1)==0) startbut += 1;
+  if (digitalRead(BUT2)==0) startbut += 2;
+  if (digitalRead(BUT3)==0) startbut += 4;
+
+  Wire.begin();  // set up I2C as master
+
+  // check eeprom & overwrite defaults if valid
+  if (eeread(0)=='h' && eeread(1)==0x01)
+  {
+    eeok = true;
+    eepagesize = eeread(2) * 4;
+    num_leds = eeread(3);
+    num_progs = eeread(4);
+    cur_prog = eeread(5);
+  }
+
+  Serial.println(F(VERSION));
+}
+
+void spiStartISR() {
+  if (num_leds==0) return;
+  if (digitalRead(STRT)==0)  // start of frame
+  {
+    if (!got_frame)  // ignore if still processing last frame?
+    {
+      pos = 0;       // reset frame position to start
+      digitalWrite(ACKB, 0);  // indicate ack
+    }
+    // else // ???
+  }
+  else
+  {
+    if (pos>=num_leds*3 || testmode)
+    {
+      active = true;
+      next = millis() + wdog;
+      got_frame = true;
+    }
+    else // incomplete frame
+    {
+      pos = 0;       // reset frame position to start
+      digitalWrite(ACKB, 1);    // indicate error with immediate ack/busy change
+    }
+  }
+}
+
+void dbgISR() {
+  lastDBGI = millis();
+}
+
+ISR (SPI_STC_vect)
+{
+  byte c = SPDR;
+  if (pos < num_leds*3)
+  {
+    ledsraw[pos] = c;
+    pos++;
+  }
+}
+
+void PrintHex8(byte data)
+{
+  char tmp;
+  tmp = (data >> 4) | 48;
+  if (tmp > 57) tmp += 39;
+  Serial.write(tmp);
+  tmp = (data & 0x0F) | 48;
+  if (tmp > 57) tmp += 39;
+  Serial.write(tmp);
+}
+
+void eewrite(int addr, byte b)
+{
+  Wire.beginTransmission(0x50);
+  Wire.write(addr>>8);
+  Wire.write(addr&0xff);
+  Wire.write(b);
+  Wire.endTransmission();
+  delay(5);  // wait for write before read back
+}
+
+byte eeread(int addr)
+{
+  Wire.beginTransmission(0x50);
+  Wire.write(addr>>8);
+  Wire.write(addr&0xff);
+  Wire.endTransmission();
+  Wire.requestFrom(0x50,1);
+  if (Wire.available())
+    return Wire.read();
+  else return 0;
+}
+
+void command(char c)
+{
+  if (c=='?')
+  {
+    Serial.println(F(VERSION));
+  }
+  else if (c=='[' || c==']')
+  {
+    if (c=='[')
+      Wire.begin(0x08);  // make I2C slave (can still act like a master)
+    else
+      Wire.begin();      // back to I2C master
+    Serial.println(c);
+  }
+  else if (c=='A')
+  {
+    pinMode(14 + (argv[0]&3), INPUT);
+    analogRead(argv[0]&3);  // throw away
+    Serial.println(analogRead(argv[0]&3));
+  }
+  else if (c=='B')
+  {
+    Serial.println((digitalRead(BUT1)==0?1:0)|(digitalRead(BUT2)==0?2:0)|
+      (digitalRead(BUT3)==0?4:0)|(startbut<<4));
+  }
+  else if (c=='C')
+  {
+    if (argc==2) eewrite(argv[0]%eepagesize, argv[1]);
+    Serial.println(eeread(argv[0]%eepagesize));
+  }
+  else if (c=='D')
+  {
+    if (argc & eeok) eewrite(5, argv[0]>=num_progs?0:argv[0]);
+    Serial.println(eeread(5));
+  }
+  else if (c=='E')
+  {
+    if (argc) echo = argv[0]?true:false;
+    Serial.println(echo?1:0);
+  }
+  else if (c=='G')
+  {
+    pinMode(14 + (argv[0]&3), OUTPUT);
+    digitalWrite(14 + (argv[0]&3), LOW);
+    Serial.println(digitalRead(14 + (argv[0]&3)));
+  }
+  else if (c=='H')
+  {
+    pinMode(14 + (argv[0]&3), OUTPUT);
+    digitalWrite(14 + (argv[0]&3), HIGH);
+    Serial.println(digitalRead(14 + (argv[0]&3)));
+  }
+  else if (c=='I')
+  {
+    pinMode(14 + (argv[0]&3), INPUT);
+    Serial.println(digitalRead(14 + (argv[0]&3)));
+  }
+  else if (c=='L')
+  {
+    if (argc && eeok)
+    {
+      num_leds = (argv[0]>MAX_LEDS?MAX_LEDS:argv[0]);
+      eewrite(3, num_leds);
+    }
+    Serial.println(num_leds);
+  }
+  else if (c=='P')
+  {
+    if (argc) cur_prog = argv[0];
+    Serial.println(cur_prog);
+  }
+  else if (c=='R')
+  {
+    if (argc==2) reg[argv[0]&15] = argv[1];
+    Serial.println(reg[argv[0]&15]);
+  }
+  else if (c=='T')
+  {
+    if (argc) testmode = argv[0]?true:false;
+    Serial.println(testmode?1:0);
+  }
+  else if (c=='W')
+  {
+    if (argc) wdog = argv[0];
+    Serial.println(wdog);
+  }
+  else if (c>=' ')
+  {
+    Serial.println('?');
+  }
+}
+
+void loop() {
+  if (Serial.available())
+  {
+    active = true;
+    next = millis() + wdog;
+
+    char c = Serial.read();
+    if (echo) Serial.print(c);
+    if (c>='0' && c<='9') {
+      if (argc==0) argc++;
+      argv[argc-1] = argv[argc-1] * 10 + c - '0';
+    }
+    else if (c==',' && argc<2)
+    {
+      if (argc==0) argc++;
+      argc++;
+      argv[argc-1] = 0;
+    }
+    else
+    {
+      command(c);
+      argc = 0;
+      argv[0] = 0;
+    }
+  }
+
+  if (!active && next <= millis())
+  {
+    memset(leds, 0, num_leds * 3);
+    if (lastDBGI + 1000 < millis())
+      leds[0].r = 63;
+    else
+      leds[0].b = 63;
+
+    if (digitalRead(BUT1)==0) leds[0].b += 63;
+    if (digitalRead(BUT2)==0) leds[0].b += 63;
+    if (digitalRead(BUT3)==0) leds[0].b += 63;
+
+    switch(col&3) { 
+    case 0: 
+      leds[led].r = 255; 
+      break;
+    case 1: 
+      leds[led].g = 255; 
+      break;
+    case 2: 
+      leds[led].b = 255; 
+      break;
+    default:
+      leds[led].r = 255;
+      leds[led].g = 255;
+      leds[led].b = 255;
+      break;
+    }
+    if (num_leds>0) FastSPI_LED.show();
+
+    led++;
+    if (led>=num_leds) { 
+      led = 1; 
+      col++; 
+    }
+
+    next = millis() + 50;
+  }
+
+  if (got_frame)
+  {
+    if (testmode)
+    {
+      // send data back via serial
+      for (int i=0; i<pos; i++) {
+        if (i>0) Serial.print(',');
+        PrintHex8(ledsraw[i]);
+      }
+      Serial.print("\r\n");
+      // and clear rest of buffer before display
+      for (; pos<num_leds*3; pos++)
+        ledsraw[pos] = 0;
+    }
+
+    //Serial.print(F("got frame!\r\n"));
+    if (num_leds>0) FastSPI_LED.show();
+
+    got_frame = false;
+    digitalWrite(ACKB, 1);  // indicate complete with (delayed) ack/busy change
+  }
+
+  /* watchdog */
+  if (wdog>0 && active && next <= millis())
+    active = false;
+}
+
+
