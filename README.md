@@ -17,3 +17,5 @@ Changed to use FastSPI_LED2 RC5 with minor changes to optimise timing for 20MHz 
 
 v08:
 In addition to supporting longer strings (currently a max of 240), and a few other minor changes, it now reinitialises the ATmega SPI slave on each packet.  Occasionally a process could be terminated while in the middle of sending an SPI byte, and HolidayDuino wouldn’t resynchronise to the start of the new byte.  This probably won’t ever happen with apps using the compositor as they would typically exit cleanly, but it could happen with rainbow.  There is also an minor hardware change that could help with this, but the software fix seems to work.
+
+Note re the PDF docs - not everything is implemeted (notably the pattern features)

@@ -1,0 +1,16 @@
+Firmware issues (07->08)
+1. was initialising LED buffer before reading number of LEDs (so always 50) 
+2. used some byte variables for counter that needed greater, and vice-versa
+3. some possible issues because not all ISR modified variables were volatile
+4. need to init SPI for each packet in case of lost/extra clock pulses
+5. changed timer code to avoid firing test pattern during SPI receive
+6. always accept 50 pixel SPI packets, and pad/extend colour data as needed
+
+Sketch uses:
+ 20MHz: 11,194 bytes flash (34% of 32,256)
+ 16MHz: 11,290 bytes flash (36% of 30,720)
+Global variables:
+ 1,308 bytes RAM
+
+Host issues
+1. used byte variable to count number of bytes to send, so max was 85

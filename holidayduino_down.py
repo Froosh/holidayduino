@@ -2,7 +2,7 @@
 import sys, os, serial
 
 hdev = "/dev/ttySP1"
-latest = "07"
+latest = "05"
 
 if not os.path.exists(hdev):
   print "Device " + hdev + " not found"
@@ -56,8 +56,6 @@ elif vers == "02" or vers == "03" or vers == "04":
 elif freq == "":
   print "Unknown: " + resp
   sys.exit(3)
-elif freq == "16":
-  baud="57600"
 else:
   baud="115200"
 
